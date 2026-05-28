@@ -1,0 +1,115 @@
+# Example hooks.yaml configuration for Memory Brain integration
+#
+# ⚠️ IMPORTANT: This is a REFERENCE EXAMPLE only!
+# Each agent has its own hook configuration format. Adapt this to your agent's format.
+#
+# What you need to do:
+# 1. Understand your agent's hook system (YAML, JSON, or other format)
+# 2. Configure hooks to call Memory Brain REST API (http://localhost:12321)
+# 3. Pass correct JSON format via stdin (see hooks/*.sh for examples)
+#
+# Hook scripts are in the hooks/ directory - copy or adapt them to your agent.
+
+enabled: true
+
+# Memory Brain server URL (modify if using different port)
+MEMORY_BRAIN_URL: "http://localhost:12321"
+
+# ─────────────────────────────────────────────────────────────
+# Hook Events (adapt to your agent's configuration format)
+# ─────────────────────────────────────────────────────────────
+
+# SessionStart - Load user profile at session start
+# Default behavior: silent accumulation (no injection)
+# To enable injection: set INJECT_CONTEXT=true environment variable
+SessionStart:
+  - hooks:
+      - type: command
+        command: "bash <YOUR_HOOKS_DIR>/session-start.sh"
+        timeout: 30
+        # env:
+        #   INJECT_CONTEXT: "true"  # Optional: inject profile into session
+
+# UserPromptSubmit - Capture user's original message for intent analysis
+# ⭐ IMPORTANT: Capture EVERY user message to build accurate intent profile
+# stdin: {"user_id", "session_id", "prompt"}
+UserPromptSubmit:
+  - hooks:
+      - type: command
+        command: "bash <YOUR_HOOKS_DIR>/user-prompt-submit.sh"
+        timeout: 30
+
+# PostToolUse - Capture tool usage for behavior pattern analysis
+# Called after each tool invocation
+# stdin: {"user_id", "session_id", "tool_name", "tool_input", "tool_result"}
+PostToolUse:
+  - hooks:
+      - type: command
+        command: "bash <YOUR_HOOKS_DIR>/post-tool-use.sh"
+        timeout: 30
+
+# PostCompact - Generate session summary after compression
+# Called after context compression
+# stdin: {"user_id", "session_id", "pre_tokens", "post_tokens", "strategy"}
+PostCompact:
+  - hooks:
+      - type: command
+        command: "bash <YOUR_HOOKS_DIR>/post-compact.sh"
+        timeout: 30
+
+# SessionEnd - Batch update user profile at session end
+# Called when session terminates
+# stdin: {"user_id", "session_id"}
+SessionEnd:
+  - hooks:
+      - type: command
+        command: "bash <YOUR_HOOKS_DIR>/session-end.sh"
+        timeout: 30
+
+# ─────────────────────────────────────────────────────────────
+# stdin JSON format reference (from agent to hook script)
+# ─────────────────────────────────────────────────────────────
+
+# SessionStart stdin:
+# {
+#   "user_id": "user_123",
+#   "session_id": "session_abc"
+# }
+
+# UserPromptSubmit stdin:
+# {
+#   "user_id": "user_123",
+#   "session_id": "session_abc",
+#   "prompt": "帮我实现一个REST API服务器"
+# }
+#
+# Intent classification keywords:
+# - development: 实现/开发/代码/编写/创建/添加/implement/code/create/add/build
+# - debugging: 调试/修复/错误/bug/问题/debug/fix/error/issue
+# - query: 查询/搜索/查找/怎么/如何/解释/query/search/find/how/explain
+# - management: 管理/配置/部署/设置/manage/config/deploy/setup/install
+# - review: 检查/审查/优化/重构/测试/review/optimize/refactor/test
+
+# PostToolUse stdin:
+# {
+#   "user_id": "user_123",
+#   "session_id": "session_abc",
+#   "tool_name": "bash",
+#   "tool_input": {"command": "ls -la"},
+#   "tool_result": "success"
+# }
+
+# PostCompact stdin:
+# {
+#   "user_id": "user_123",
+#   "session_id": "session_abc",
+#   "pre_tokens": 10000,
+#   "post_tokens": 5000,
+#   "strategy": "selective"
+# }
+
+# SessionEnd stdin:
+# {
+#   "user_id": "user_123",
+#   "session_id": "session_abc"
+# }
