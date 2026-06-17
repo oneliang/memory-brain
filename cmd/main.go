@@ -10,12 +10,13 @@ import (
 	"syscall"
 
 	"github.com/oneliang/memory-brain/internal/api"
+	"github.com/oneliang/memory-brain/internal/config"
 )
 
 func main() {
 	// Parse command line arguments
 	command := flag.String("command", "server", "Command to run (server)")
-	port := flag.Int("port", 12321, "Server port")
+	port := flag.Int("port", 0, "Server port (0 = use config)")
 	flag.Parse()
 
 	switch *command {
@@ -27,9 +28,21 @@ func main() {
 	}
 }
 
-func runServer(port int) {
-	// Create server
-	server := api.NewServer(port)
+func runServer(portOverride int) {
+	// Load configuration
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	// Use command line port if specified, otherwise use config
+	port := cfg.Server.Port
+	if portOverride > 0 {
+		port = portOverride
+	}
+
+	// Create server with config
+	server := api.NewServer(port, cfg)
 
 	// Setup graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())

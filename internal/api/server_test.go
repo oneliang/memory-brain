@@ -15,7 +15,7 @@ import (
 
 // TestHandleHealth tests the health check endpoint
 func TestHandleHealth(t *testing.T) {
-	srv := NewServer(12321)
+	srv := NewServer(12321, nil)
 	req := httptest.NewRequest(http.MethodGet, "/memory/health", nil)
 	w := httptest.NewRecorder()
 
@@ -51,7 +51,7 @@ func TestHandleHealth(t *testing.T) {
 
 // TestHandleHealth_MethodNotAllowed tests wrong method on health endpoint
 func TestHandleHealth_MethodNotAllowed(t *testing.T) {
-	srv := NewServer(12321)
+	srv := NewServer(12321, nil)
 	req := httptest.NewRequest(http.MethodPost, "/memory/health", nil)
 	w := httptest.NewRecorder()
 
@@ -65,7 +65,7 @@ func TestHandleHealth_MethodNotAllowed(t *testing.T) {
 
 // TestHandleObserve tests the observe endpoint
 func TestHandleObserve(t *testing.T) {
-	srv := NewServer(12321)
+	srv := NewServer(12321, nil)
 
 	obs := types.Observation{
 		ID:        "obs_test_1",
@@ -111,7 +111,7 @@ func TestHandleObserve(t *testing.T) {
 
 // TestHandleObserve_Dedup tests deduplication behavior
 func TestHandleObserve_Dedup(t *testing.T) {
-	srv := NewServer(12321)
+	srv := NewServer(12321, nil)
 
 	obs := types.Observation{
 		ID:        "obs_test_2",
@@ -157,7 +157,7 @@ func TestHandleObserve_Dedup(t *testing.T) {
 
 // TestHandleObserve_MethodNotAllowed tests wrong method
 func TestHandleObserve_MethodNotAllowed(t *testing.T) {
-	srv := NewServer(12321)
+	srv := NewServer(12321, nil)
 	req := httptest.NewRequest(http.MethodGet, "/memory/observe", nil)
 	w := httptest.NewRecorder()
 
@@ -170,7 +170,7 @@ func TestHandleObserve_MethodNotAllowed(t *testing.T) {
 
 // TestHandleObserve_InvalidBody tests invalid JSON body
 func TestHandleObserve_InvalidBody(t *testing.T) {
-	srv := NewServer(12321)
+	srv := NewServer(12321, nil)
 	req := httptest.NewRequest(http.MethodPost, "/memory/observe", strings.NewReader("invalid json"))
 	w := httptest.NewRecorder()
 
@@ -184,7 +184,7 @@ func TestHandleObserve_InvalidBody(t *testing.T) {
 
 // TestHandleProfile tests the profile endpoint
 func TestHandleProfile(t *testing.T) {
-	srv := NewServer(12321)
+	srv := NewServer(12321, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/memory/profile?user=user_test_1", nil)
 	w := httptest.NewRecorder()
@@ -222,7 +222,7 @@ func TestHandleProfile(t *testing.T) {
 
 // TestHandleProfile_Inject tests profile with system message injection
 func TestHandleProfile_Inject(t *testing.T) {
-	srv := NewServer(12321)
+	srv := NewServer(12321, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/memory/profile?user=user_test_1&inject=true", nil)
 	w := httptest.NewRecorder()
@@ -250,7 +250,7 @@ func TestHandleProfile_Inject(t *testing.T) {
 
 // TestHandleProfile_MissingUser tests missing user parameter
 func TestHandleProfile_MissingUser(t *testing.T) {
-	srv := NewServer(12321)
+	srv := NewServer(12321, nil)
 	req := httptest.NewRequest(http.MethodGet, "/memory/profile", nil)
 	w := httptest.NewRecorder()
 
@@ -264,7 +264,7 @@ func TestHandleProfile_MissingUser(t *testing.T) {
 
 // TestHandleSearch tests the search endpoint (without vector search)
 func TestHandleSearch(t *testing.T) {
-	srv := NewServer(12321)
+	srv := NewServer(12321, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/memory/search?query=test&user=user_test_1&limit=5", nil)
 	w := httptest.NewRecorder()
@@ -281,7 +281,7 @@ func TestHandleSearch(t *testing.T) {
 
 // TestHandleSearch_MissingParams tests missing query/user parameters
 func TestHandleSearch_MissingParams(t *testing.T) {
-	srv := NewServer(12321)
+	srv := NewServer(12321, nil)
 
 	// Missing query
 	req1 := httptest.NewRequest(http.MethodGet, "/memory/search?user=user_test_1", nil)
@@ -302,7 +302,7 @@ func TestHandleSearch_MissingParams(t *testing.T) {
 
 // TestHandleProfileUpdate tests profile update endpoint
 func TestHandleProfileUpdate(t *testing.T) {
-	srv := NewServer(12321)
+	srv := NewServer(12321, nil)
 
 	reqBody := map[string]interface{}{
 		"user_id":    "user_test_1",
@@ -352,7 +352,7 @@ func TestHandleProfileUpdate(t *testing.T) {
 
 // TestHandleProfileUpdate_MissingUserID tests missing user_id
 func TestHandleProfileUpdate_MissingUserID(t *testing.T) {
-	srv := NewServer(12321)
+	srv := NewServer(12321, nil)
 
 	reqBody := map[string]interface{}{
 		"session_id": "session_test_1",
@@ -371,7 +371,7 @@ func TestHandleProfileUpdate_MissingUserID(t *testing.T) {
 
 // TestHandleSessionSummary tests session summary endpoint
 func TestHandleSessionSummary(t *testing.T) {
-	srv := NewServer(12321)
+	srv := NewServer(12321, nil)
 
 	// Test with provided summary
 	summary := &types.SessionSummary{
@@ -420,7 +420,7 @@ func TestHandleSessionSummary(t *testing.T) {
 
 // TestHandleSessionSummary_Generate tests summary generation from observations
 func TestHandleSessionSummary_Generate(t *testing.T) {
-	srv := NewServer(12321)
+	srv := NewServer(12321, nil)
 
 	reqBody := map[string]interface{}{
 		"user_id":    "user_test_1",
@@ -477,7 +477,7 @@ func TestHandleSessionSummary_Generate(t *testing.T) {
 
 // TestHandleSessionSummary_MissingData tests missing summary and observations
 func TestHandleSessionSummary_MissingData(t *testing.T) {
-	srv := NewServer(12321)
+	srv := NewServer(12321, nil)
 
 	reqBody := map[string]interface{}{
 		"user_id":    "user_test_1",
@@ -497,7 +497,7 @@ func TestHandleSessionSummary_MissingData(t *testing.T) {
 
 // TestServer_Start tests server lifecycle
 func TestServer_Start(t *testing.T) {
-	srv := NewServer(3112)
+	srv := NewServer(3112, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()

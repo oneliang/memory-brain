@@ -1,0 +1,38 @@
+# Memory Brain Configuration
+# Copy this file to ~/.memory-brain/config.yaml and modify as needed
+
+# Graph module configuration (Knowledge Graph / Graph RAG)
+graph:
+  enabled: true
+  inject_to_profile: true                  # Inject graph context to profile at session start
+
+  # Ollama configuration for NER+RE (Named Entity Recognition + Relation Extraction)
+  ollama:
+    endpoint: "http://localhost:11434"  # Ollama API endpoint
+    model: "qwen2.5:3b"                  # Model for NER+RE (recommend: qwen2.5:3b or llama3.2:3b)
+    timeout: 30                          # HTTP request timeout in seconds
+
+  # Query configuration
+  query:
+    max_hops: 3                          # Maximum hops for multi-hop queries
+    default_limit: 10                    # Default number of results to return
+
+# Server configuration
+server:
+  port: 12321                            # HTTP server port
+
+# Storage configuration
+storage:
+  base_path: "~/.memory-brain"           # Base path for all data
+  users_dir: "users"                     # Directory name for user data
+
+# Logging configuration
+logging:
+  level: "info"                          # Log level: debug, info, warn, error
+  format: "text"                         # Log format: text, json
+
+# Vector search configuration (requires Ollama for embeddings)
+vector:
+  enabled: true
+  embedding_model: "nomic-embed-text"    # Model for embeddings
+  endpoint: "http://localhost:11434"     # Ollama endpoint

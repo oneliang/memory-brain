@@ -11,8 +11,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/oneliang/memory-brain/internal/config"
 	"github.com/oneliang/memory-brain/internal/decay"
 	"github.com/oneliang/memory-brain/internal/dedup"
+	"github.com/oneliang/memory-brain/internal/graph"
 	"github.com/oneliang/memory-brain/internal/profile"
 	"github.com/oneliang/memory-brain/internal/privacy"
 	"github.com/oneliang/memory-brain/internal/search"
@@ -30,30 +32,58 @@ type Server struct {
 
 // Handler handles all API requests
 type Handler struct {
-	storage             *storage.Storage
-	searchEngines       map[string]*search.HybridSearchEngine // per-user search engines
-	searchMu            sync.RWMutex                         // protects searchEngines
-	analyzer            *profile.Analyzer
-	generator           *summary.Generator
-	sessionDedupManager *dedup.SessionCacheManager           // session-level dedup (immediate)
-	userDedupCaches     map[string]*dedup.HashCache          // user-level dedup (for storage)
-	dedupMu             sync.RWMutex                         // protects userDedupCaches
+	storage               *storage.Storage
+	searchEngines         map[string]*search.HybridSearchEngine // per-user search engines
+	searchMu              sync.RWMutex                          // protects searchEngines
+	analyzer              *profile.Analyzer
+	generator             *summary.Generator
+	sessionDedupManager   *dedup.SessionCacheManager            // session-level dedup (immediate)
+	userDedupCaches       map[string]*dedup.HashCache           // user-level dedup (for storage)
+	dedupMu               sync.RWMutex                          // protects userDedupCaches
+	graphHandler          *GraphHandler                         // graph module handler
+	injectGraphToProfile  bool                                  // inject graph context to profile
 }
 
 // NewServer creates a new API server
-func NewServer(port int) *Server {
+func NewServer(port int, cfg *config.Config) *Server {
 	// Initialize storage
 	store := storage.NewStorage("")
+
+	// Initialize graph handler with config
+	var graphConfig *graph.GraphConfig
+	if cfg != nil && cfg.Graph.Enabled {
+		graphConfig = &graph.GraphConfig{
+			Enabled: cfg.Graph.Enabled,
+			Ollama: graph.OllamaConfig{
+				Endpoint: cfg.Graph.Ollama.Endpoint,
+				Model:    cfg.Graph.Ollama.Model,
+				Timeout:  cfg.Graph.Ollama.Timeout,
+			},
+			Query: graph.QueryConfig{
+				MaxHops:      cfg.Graph.Query.MaxHops,
+				DefaultLimit: cfg.Graph.Query.DefaultLimit,
+			},
+		}
+	} else {
+		// Default config if not provided
+		graphConfig = &graph.GraphConfig{
+			Enabled: false,
+		}
+	}
+	graphHandler := NewGraphHandler(graphConfig)
+	graphHandler.RegisterExtractors()
 
 	return &Server{
 		port: port,
 		handler: &Handler{
-			storage:             store,
-			searchEngines:       make(map[string]*search.HybridSearchEngine),
-			analyzer:            profile.NewAnalyzer(),
-			generator:           summary.NewGenerator(),
-			sessionDedupManager: dedup.NewSessionCacheManager(dedup.DedupWindow),
-			userDedupCaches:     make(map[string]*dedup.HashCache),
+			storage:              store,
+			searchEngines:        make(map[string]*search.HybridSearchEngine),
+			analyzer:             profile.NewAnalyzer(),
+			generator:            summary.NewGenerator(),
+			sessionDedupManager:  dedup.NewSessionCacheManager(dedup.DedupWindow),
+			userDedupCaches:      make(map[string]*dedup.HashCache),
+			graphHandler:         graphHandler,
+			injectGraphToProfile: cfg != nil && cfg.Graph.InjectToProfile,
 		},
 	}
 }
@@ -119,11 +149,17 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/memory/session/summary", s.handler.handleSessionSummary)
 	mux.HandleFunc("/memory/health", s.handler.handleHealth)
 
+	// Register graph routes
+	mux.HandleFunc("/memory/graph/extract", s.handler.graphHandler.HandleExtract)
+	mux.HandleFunc("/memory/graph/query", s.handler.graphHandler.HandleQuery)
+	mux.HandleFunc("/memory/graph/context", s.handler.graphHandler.HandleContext)
+	mux.HandleFunc("/memory/graph/stats", s.handler.graphHandler.HandleStats)
+
 	s.server = &http.Server{
 		Addr:         fmt.Sprintf(":%d", s.port),
 		Handler:      mux,
 		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		WriteTimeout: 30 * time.Second, // Increased for graph operations
 	}
 
 	// Start server in goroutine
@@ -173,6 +209,45 @@ func (h *Handler) handleObserve(w http.ResponseWriter, r *http.Request) {
 
 	// 3. Process observation based on HookType
 	h.processObservation(&obs)
+
+	// 4. Graph extraction (async, non-blocking)
+	if h.graphHandler != nil && obs.UserID != "" {
+		go func() {
+			// Get or create store
+			store, err := h.graphHandler.GetStore(obs.UserID)
+			if err != nil {
+				log.Printf("Graph: failed to get store for user %s: %v", obs.UserID, err)
+				return
+			}
+
+			// Run synchronous extractors
+			result, err := h.graphHandler.registry.ExtractAll(&obs)
+			if err != nil {
+				log.Printf("Graph: extraction failed: %v", err)
+				return
+			}
+
+			if result != nil && (len(result.Entities) > 0 || len(result.Relations) > 0) {
+				if err := store.SaveExtractionResult(obs.UserID, result); err != nil {
+					log.Printf("Graph: failed to save result: %v", err)
+				}
+			}
+
+			// Run async extractors (Ollama)
+			for _, ext := range h.graphHandler.registry.GetAsync() {
+				asyncResult, err := ext.Extract(&obs)
+				if err != nil {
+					log.Printf("Graph: async extractor %s failed: %v", ext.Name(), err)
+					continue
+				}
+				if asyncResult != nil && (len(asyncResult.Entities) > 0 || len(asyncResult.Relations) > 0) {
+					if err := store.SaveExtractionResult(obs.UserID, asyncResult); err != nil {
+						log.Printf("Graph: failed to save async result: %v", err)
+					}
+				}
+			}
+		}()
+	}
 
 	writeSuccess(w, map[string]interface{}{
 		"obs_id": obs.ID,
@@ -420,8 +495,26 @@ func (h *Handler) handleProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 4. Generate system message if inject=true
-	if inject && (len(profiles) > 0 || len(patterns) > 0) {
-		resp.SystemMessage = h.buildProfileMessage(profiles, patterns)
+	if inject {
+		var messages []string
+
+		// Profile message
+		if len(profiles) > 0 || len(patterns) > 0 {
+			if msg := h.buildProfileMessage(profiles, patterns); msg != "" {
+				messages = append(messages, msg)
+			}
+		}
+
+		// Graph context message
+		if h.injectGraphToProfile && h.graphHandler != nil {
+			if msg := h.buildGraphContextMessage(userID); msg != "" {
+				messages = append(messages, msg)
+			}
+		}
+
+		if len(messages) > 0 {
+			resp.SystemMessage = strings.Join(messages, "\n\n")
+		}
 	}
 
 	writeSuccess(w, resp)
@@ -460,6 +553,73 @@ func (h *Handler) buildProfileMessage(profiles []types.ProfileCard, patterns []t
 		return ""
 	}
 	return "用户画像摘要:\n- " + strings.Join(parts, "\n- ")
+}
+
+// buildGraphContextMessage generates context message from graph data
+func (h *Handler) buildGraphContextMessage(userID string) string {
+	if h.graphHandler == nil {
+		return ""
+	}
+
+	// Get graph context
+	store, err := h.graphHandler.GetStore(userID)
+	if err != nil {
+		log.Printf("Failed to get graph store for user %s: %v", userID, err)
+		return ""
+	}
+
+	engine := graph.NewQueryEngine(store)
+	context, err := engine.GetContext(userID, 10)
+	if err != nil {
+		log.Printf("Failed to get graph context for user %s: %v", userID, err)
+		return ""
+	}
+
+	var parts []string
+
+	// Tools
+	if tools, ok := context["tools"].([]map[string]interface{}); ok && len(tools) > 0 {
+		var toolNames []string
+		for _, t := range tools {
+			if name, ok := t["name"].(string); ok {
+				toolNames = append(toolNames, name)
+			}
+		}
+		if len(toolNames) > 0 {
+			parts = append(parts, "常用工具: "+strings.Join(toolNames, ", "))
+		}
+	}
+
+	// Techs
+	if techs, ok := context["techs"].([]map[string]interface{}); ok && len(techs) > 0 {
+		var techNames []string
+		for _, t := range techs {
+			if name, ok := t["name"].(string); ok {
+				techNames = append(techNames, name)
+			}
+		}
+		if len(techNames) > 0 {
+			parts = append(parts, "相关技术: "+strings.Join(techNames, ", "))
+		}
+	}
+
+	// Files
+	if files, ok := context["files"].([]map[string]interface{}); ok && len(files) > 0 {
+		var fileNames []string
+		for _, f := range files {
+			if name, ok := f["name"].(string); ok {
+				fileNames = append(fileNames, name)
+			}
+		}
+		if len(fileNames) > 0 {
+			parts = append(parts, "近期文件: "+strings.Join(fileNames, ", "))
+		}
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+	return "知识图谱上下文:\n- " + strings.Join(parts, "\n- ")
 }
 
 // handleSearch handles GET /memory/search
