@@ -186,7 +186,7 @@ func TestHandleObserve_InvalidBody(t *testing.T) {
 func TestHandleProfile(t *testing.T) {
 	srv := NewServer(12321, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/memory/profile?user=user_test_1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/memory/profile?user_id=user_test_1", nil)
 	w := httptest.NewRecorder()
 
 	srv.handler.handleProfile(w, req)
@@ -224,7 +224,7 @@ func TestHandleProfile(t *testing.T) {
 func TestHandleProfile_Inject(t *testing.T) {
 	srv := NewServer(12321, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/memory/profile?user=user_test_1&inject=true", nil)
+	req := httptest.NewRequest(http.MethodGet, "/memory/profile?user_id=user_test_1&inject=true", nil)
 	w := httptest.NewRecorder()
 
 	srv.handler.handleProfile(w, req)
@@ -266,7 +266,7 @@ func TestHandleProfile_MissingUser(t *testing.T) {
 func TestHandleSearch(t *testing.T) {
 	srv := NewServer(12321, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/memory/search?query=test&user=user_test_1&limit=5", nil)
+	req := httptest.NewRequest(http.MethodGet, "/memory/search?query=test&user_id=user_test_1&limit=5", nil)
 	w := httptest.NewRecorder()
 
 	srv.handler.handleSearch(w, req)
@@ -284,19 +284,19 @@ func TestHandleSearch_MissingParams(t *testing.T) {
 	srv := NewServer(12321, nil)
 
 	// Missing query
-	req1 := httptest.NewRequest(http.MethodGet, "/memory/search?user=user_test_1", nil)
+	req1 := httptest.NewRequest(http.MethodGet, "/memory/search?user_id=user_test_1", nil)
 	w1 := httptest.NewRecorder()
 	srv.handler.handleSearch(w1, req1)
 	if w1.Result().StatusCode != http.StatusBadRequest {
 		t.Error("expected 400 for missing query")
 	}
 
-	// Missing user
+	// Missing user_id
 	req2 := httptest.NewRequest(http.MethodGet, "/memory/search?query=test", nil)
 	w2 := httptest.NewRecorder()
 	srv.handler.handleSearch(w2, req2)
 	if w2.Result().StatusCode != http.StatusBadRequest {
-		t.Error("expected 400 for missing user")
+		t.Error("expected 400 for missing user_id")
 	}
 }
 

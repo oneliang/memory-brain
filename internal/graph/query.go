@@ -51,12 +51,14 @@ func (q *QueryEngine) MultiHopQuery(userID string, opts *QueryOptions) ([]QueryR
 	visited := make(map[int64]bool)
 	scoreMap := make(map[int64]float64)
 	hopsMap := make(map[int64]int)
+	parentMap := make(map[int64]int64) // Track parent for path reconstruction
 
 	// Start from user node
 	queue := []int64{userNode.ID}
 	visited[userNode.ID] = true
 	scoreMap[userNode.ID] = 1.0
 	hopsMap[userNode.ID] = 0
+	parentMap[userNode.ID] = -1 // User node has no parent
 
 	for len(queue) > 0 {
 		// Dequeue
@@ -87,6 +89,7 @@ func (q *QueryEngine) MultiHopQuery(userID string, opts *QueryOptions) ([]QueryR
 			if newScore > scoreMap[edge.TargetID] {
 				scoreMap[edge.TargetID] = newScore
 				hopsMap[edge.TargetID] = currentHops + 1
+				parentMap[edge.TargetID] = currentID // Update parent
 			}
 
 			// Enqueue if not visited
@@ -117,10 +120,14 @@ func (q *QueryEngine) MultiHopQuery(userID string, opts *QueryOptions) ([]QueryR
 			continue
 		}
 
+		// Reconstruct path from parentMap
+		path := reconstructPath(parentMap, userNode.ID, nodeID)
+
 		results = append(results, QueryResult{
 			Node:  *node,
 			Score: score,
 			Hops:  hopsMap[nodeID],
+			Path:  path,
 		})
 	}
 
@@ -310,4 +317,33 @@ func contains(slice []string, item string) bool {
 		}
 	}
 	return false
+}
+
+// reconstructPath traces back from target to source using parentMap
+func reconstructPath(parentMap map[int64]int64, sourceID, targetID int64) []int64 {
+	if sourceID == targetID {
+		return []int64{sourceID}
+	}
+
+	// Check if target exists in parentMap
+	if _, exists := parentMap[targetID]; !exists {
+		return []int64{targetID} // No path, return just target
+	}
+
+	// Trace back from target to source
+	var path []int64
+	current := targetID
+	for current != sourceID {
+		path = append([]int64{current}, path...)
+		parent, exists := parentMap[current]
+		if !exists {
+			// Broken path, return what we have
+			break
+		}
+		current = parent
+	}
+	// Prepend source
+	path = append([]int64{sourceID}, path...)
+
+	return path
 }

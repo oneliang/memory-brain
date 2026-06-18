@@ -460,9 +460,9 @@ func (h *Handler) handleProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID := r.URL.Query().Get("user")
+	userID := r.URL.Query().Get("user_id")
 	if userID == "" {
-		writeError(w, "Missing user parameter", http.StatusBadRequest)
+		writeError(w, "Missing user_id parameter", http.StatusBadRequest)
 		return
 	}
 
@@ -555,71 +555,185 @@ func (h *Handler) buildProfileMessage(profiles []types.ProfileCard, patterns []t
 	return "用户画像摘要:\n- " + strings.Join(parts, "\n- ")
 }
 
-// buildGraphContextMessage generates context message from graph data
+// buildPathText converts a path of node IDs to readable text with relations
+// Example: [user, bash, kubectl] -> "user → bash (uses) → kubectl (executes)"
+func buildPathText(path []int64, store *graph.Store) string {
+	if len(path) == 0 {
+		return ""
+	}
+
+	var parts []string
+	for i := 0; i < len(path)-1; i++ {
+		// Get current node
+		node, err := store.GetNode(path[i])
+		if err != nil || node == nil {
+			continue
+		}
+
+		// Get edges to find relation to next node
+		edges, err := store.GetOutgoingEdges(path[i])
+		if err != nil {
+			parts = append(parts, node.Name)
+			continue
+		}
+
+		// Find edge to next node
+		relation := ""
+		for _, edge := range edges {
+			if edge.TargetID == path[i+1] {
+				relation = edge.Relation
+				break
+			}
+		}
+
+		if relation != "" {
+			parts = append(parts, fmt.Sprintf("%s (%s)", node.Name, relation))
+		} else {
+			parts = append(parts, node.Name)
+		}
+	}
+
+	// Add last node
+	if len(path) > 0 {
+		lastNode, err := store.GetNode(path[len(path)-1])
+		if err == nil && lastNode != nil {
+			parts = append(parts, lastNode.Name)
+		}
+	}
+
+	return strings.Join(parts, " → ")
+}
+
+// typeLabel returns a human-readable label for entity types
+func typeLabel(typ string) string {
+	labels := map[string]string{
+		"user":    "用户",
+		"tool":    "工具",
+		"tech":    "技术",
+		"file":    "文件",
+		"command": "命令",
+		"person":  "人物",
+		"org":     "组织",
+		"loc":     "地点",
+		"intent":  "意图",
+		"lang":    "语言",
+		"concept": "概念",
+		"product": "产品",
+	}
+	if label, ok := labels[typ]; ok {
+		return label
+	}
+	return typ
+}
+
+// buildGraphContextMessage generates context message from graph data with path format
 func (h *Handler) buildGraphContextMessage(userID string) string {
 	if h.graphHandler == nil {
 		return ""
 	}
 
-	// Get graph context
+	// Get graph store
 	store, err := h.graphHandler.GetStore(userID)
 	if err != nil {
 		log.Printf("Failed to get graph store for user %s: %v", userID, err)
 		return ""
 	}
 
+	// Execute multi-hop query to get paths
 	engine := graph.NewQueryEngine(store)
-	context, err := engine.GetContext(userID, 10)
+	opts := &graph.QueryOptions{
+		MaxHops:   2,
+		Limit:     20,
+		MinScore:  0.1,
+		DecayRate: 0.7,
+	}
+
+	results, err := engine.MultiHopQuery(userID, opts)
 	if err != nil {
-		log.Printf("Failed to get graph context for user %s: %v", userID, err)
+		log.Printf("Failed to execute multi-hop query for user %s: %v", userID, err)
 		return ""
 	}
 
+	if len(results) == 0 {
+		return ""
+	}
+
+	// Build path texts
+	var paths []string
+	seen := make(map[string]bool)
+	for _, result := range results {
+		if len(result.Path) > 1 {
+			pathText := buildPathText(result.Path, store)
+			if pathText != "" && !seen[pathText] {
+				paths = append(paths, pathText)
+				seen[pathText] = true
+				if len(paths) >= 5 { // Limit to 5 paths
+					break
+				}
+			}
+		}
+	}
+
+	// Build entity type statistics
+	typeCount := make(map[string][]string)
+	seenEntities := make(map[string]bool)
+	for _, result := range results {
+		entityKey := result.Node.Type + ":" + result.Node.Name
+		if !seenEntities[entityKey] {
+			typeCount[result.Node.Type] = append(typeCount[result.Node.Type], result.Node.Name)
+			seenEntities[entityKey] = true
+		}
+	}
+
+	// Format output
 	var parts []string
 
-	// Tools
-	if tools, ok := context["tools"].([]map[string]interface{}); ok && len(tools) > 0 {
-		var toolNames []string
-		for _, t := range tools {
-			if name, ok := t["name"].(string); ok {
-				toolNames = append(toolNames, name)
-			}
-		}
-		if len(toolNames) > 0 {
-			parts = append(parts, "常用工具: "+strings.Join(toolNames, ", "))
+	// Paths section
+	if len(paths) > 0 {
+		parts = append(parts, "用户知识图谱:")
+		for i, path := range paths {
+			parts = append(parts, fmt.Sprintf("路径%d: %s", i+1, path))
 		}
 	}
 
-	// Techs
-	if techs, ok := context["techs"].([]map[string]interface{}); ok && len(techs) > 0 {
-		var techNames []string
-		for _, t := range techs {
-			if name, ok := t["name"].(string); ok {
-				techNames = append(techNames, name)
+	// Entity statistics section
+	if len(typeCount) > 0 {
+		parts = append(parts, "\n实体统计:")
+		// Order types for consistent output
+		typeOrder := []string{"tool", "tech", "file", "command", "person", "org", "loc", "intent", "lang", "concept", "product"}
+		for _, typ := range typeOrder {
+			if names, ok := typeCount[typ]; ok && len(names) > 0 {
+				// Limit to 5 entities per type
+				displayNames := names
+				if len(names) > 5 {
+					displayNames = names[:5]
+				}
+				parts = append(parts, fmt.Sprintf("- %s: %s", typeLabel(typ), strings.Join(displayNames, ", ")))
 			}
 		}
-		if len(techNames) > 0 {
-			parts = append(parts, "相关技术: "+strings.Join(techNames, ", "))
-		}
-	}
-
-	// Files
-	if files, ok := context["files"].([]map[string]interface{}); ok && len(files) > 0 {
-		var fileNames []string
-		for _, f := range files {
-			if name, ok := f["name"].(string); ok {
-				fileNames = append(fileNames, name)
+		// Add any remaining types not in the order list
+		for typ, names := range typeCount {
+			found := false
+			for _, t := range typeOrder {
+				if t == typ {
+					found = true
+					break
+				}
 			}
-		}
-		if len(fileNames) > 0 {
-			parts = append(parts, "近期文件: "+strings.Join(fileNames, ", "))
+			if !found && len(names) > 0 {
+				displayNames := names
+				if len(names) > 5 {
+					displayNames = names[:5]
+				}
+				parts = append(parts, fmt.Sprintf("- %s: %s", typeLabel(typ), strings.Join(displayNames, ", ")))
+			}
 		}
 	}
 
 	if len(parts) == 0 {
 		return ""
 	}
-	return "知识图谱上下文:\n- " + strings.Join(parts, "\n- ")
+	return strings.Join(parts, "\n")
 }
 
 // handleSearch handles GET /memory/search
@@ -630,9 +744,9 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := r.URL.Query().Get("query")
-	userID := r.URL.Query().Get("user")
+	userID := r.URL.Query().Get("user_id")
 	if query == "" || userID == "" {
-		writeError(w, "Missing query or user parameter", http.StatusBadRequest)
+		writeError(w, "Missing query or user_id parameter", http.StatusBadRequest)
 		return
 	}
 
