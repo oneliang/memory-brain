@@ -32,7 +32,7 @@ SessionStart:
 
 # UserPromptSubmit - Capture user's original message for intent analysis
 # ⭐ IMPORTANT: Capture EVERY user message to build accurate intent profile
-# stdin: {"user_id", "session_id", "prompt"}
+# stdin: {"user_id", "session_id", "prompt", "directory" (optional)}
 UserPromptSubmit:
   - hooks:
       - type: command
@@ -41,7 +41,7 @@ UserPromptSubmit:
 
 # PostToolUse - Capture tool usage for behavior pattern analysis
 # Called after each tool invocation
-# stdin: {"user_id", "session_id", "tool_name", "tool_input", "tool_result"}
+# stdin: {"user_id", "session_id", "tool_name", "tool_input", "tool_result", "directory" (optional)}
 PostToolUse:
   - hooks:
       - type: command
@@ -80,7 +80,8 @@ SessionEnd:
 # {
 #   "user_id": "user_123",
 #   "session_id": "session_abc",
-#   "prompt": "帮我实现一个REST API服务器"
+#   "prompt": "帮我实现一个REST API服务器",
+#   "directory": "/path/to/project"  // Optional: defaults to current working directory
 # }
 #
 # Intent classification keywords:
@@ -96,7 +97,8 @@ SessionEnd:
 #   "session_id": "session_abc",
 #   "tool_name": "bash",
 #   "tool_input": {"command": "ls -la"},
-#   "tool_result": "success"
+#   "tool_result": "success",
+#   "directory": "/path/to/project"  // Optional: defaults to current working directory
 # }
 
 # PostCompact stdin:

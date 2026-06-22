@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/oneliang/memory-brain/pkg/hash"
 	"github.com/oneliang/memory-brain/pkg/types"
 )
 
@@ -25,6 +26,15 @@ const (
 
 	// SessionsArchiveDir is the sessions archive directory
 	SessionsArchiveDir = "sessions_archive"
+
+	// SessionsDir is the session profile directory
+	SessionsDir = "sessions"
+
+	// ProjectsDir is the project profile directory
+	ProjectsDir = "projects"
+
+	// ProjectMetaFile is the project metadata file
+	ProjectMetaFile = "meta.json"
 )
 
 // Storage handles file-based storage for Memory Brain
@@ -274,4 +284,329 @@ func splitLines(s string) []string {
 		lines = append(lines, s[start:])
 	}
 	return lines
+}
+
+// ========== Session-level storage methods ==========
+
+// GetSessionDir returns the session-specific directory
+func (s *Storage) GetSessionDir(userID, sessionID string) string {
+	return filepath.Join(s.GetUserDir(userID), SessionsDir, sessionID)
+}
+
+// EnsureSessionDir creates session directory if not exists
+func (s *Storage) EnsureSessionDir(userID, sessionID string) error {
+	sessionDir := s.GetSessionDir(userID, sessionID)
+	return os.MkdirAll(sessionDir, 0755)
+}
+
+// AppendSessionProfile appends a profile card to session's profile.jsonl
+func (s *Storage) AppendSessionProfile(userID, sessionID string, card *types.ProfileCard) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.EnsureSessionDir(userID, sessionID); err != nil {
+		return err
+	}
+
+	filePath := filepath.Join(s.GetSessionDir(userID, sessionID), ProfileFile)
+	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	data, err := json.Marshal(card)
+	if err != nil {
+		return err
+	}
+
+	_, err = file.Write(append(data, '\n'))
+	return err
+}
+
+// ReadSessionProfiles reads all profile cards for a session
+func (s *Storage) ReadSessionProfiles(userID, sessionID string) ([]types.ProfileCard, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	filePath := filepath.Join(s.GetSessionDir(userID, sessionID), ProfileFile)
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []types.ProfileCard{}, nil
+		}
+		return nil, err
+	}
+
+	var cards []types.ProfileCard
+	lines := splitLines(string(data))
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		var card types.ProfileCard
+		if err := json.Unmarshal([]byte(line), &card); err != nil {
+			continue
+		}
+		cards = append(cards, card)
+	}
+	return cards, nil
+}
+
+// WriteSessionProfiles overwrites session's profile.jsonl with provided cards
+func (s *Storage) WriteSessionProfiles(userID, sessionID string, cards []types.ProfileCard) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.EnsureSessionDir(userID, sessionID); err != nil {
+		return err
+	}
+
+	filePath := filepath.Join(s.GetSessionDir(userID, sessionID), ProfileFile)
+	file, err := os.Create(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	for _, card := range cards {
+		data, err := json.Marshal(card)
+		if err != nil {
+			return err
+		}
+		if _, err := file.Write(append(data, '\n')); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// AppendSessionPattern appends a pattern card to session's patterns.jsonl
+func (s *Storage) AppendSessionPattern(userID, sessionID string, pattern *types.PatternCard) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.EnsureSessionDir(userID, sessionID); err != nil {
+		return err
+	}
+
+	filePath := filepath.Join(s.GetSessionDir(userID, sessionID), PatternsFile)
+	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	data, err := json.Marshal(pattern)
+	if err != nil {
+		return err
+	}
+
+	_, err = file.Write(append(data, '\n'))
+	return err
+}
+
+// ReadSessionPatterns reads all pattern cards for a session
+func (s *Storage) ReadSessionPatterns(userID, sessionID string) ([]types.PatternCard, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	filePath := filepath.Join(s.GetSessionDir(userID, sessionID), PatternsFile)
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []types.PatternCard{}, nil
+		}
+		return nil, err
+	}
+
+	var patterns []types.PatternCard
+	lines := splitLines(string(data))
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		var pattern types.PatternCard
+		if err := json.Unmarshal([]byte(line), &pattern); err != nil {
+			continue
+		}
+		patterns = append(patterns, pattern)
+	}
+	return patterns, nil
+}
+
+// WriteSessionPatterns overwrites session's patterns.jsonl with provided patterns
+func (s *Storage) WriteSessionPatterns(userID, sessionID string, patterns []types.PatternCard) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.EnsureSessionDir(userID, sessionID); err != nil {
+		return err
+	}
+
+	filePath := filepath.Join(s.GetSessionDir(userID, sessionID), PatternsFile)
+	file, err := os.Create(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	for _, pattern := range patterns {
+		data, err := json.Marshal(pattern)
+		if err != nil {
+			return err
+		}
+		if _, err := file.Write(append(data, '\n')); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// ========== Project-level storage methods ==========
+
+// GetProjectDir returns the project-specific directory (using SHA256 hash of path)
+func (s *Storage) GetProjectDir(directory string) string {
+	hash := computeProjectHash(directory)
+	return filepath.Join(s.baseDir, ProjectsDir, hash)
+}
+
+// computeProjectHash computes SHA256 hash of directory path
+func computeProjectHash(directory string) string {
+	return hash.ProjectHash(directory)
+}
+
+// EnsureProjectDir creates project directory if not exists
+func (s *Storage) EnsureProjectDir(directory string) error {
+	projectDir := s.GetProjectDir(directory)
+	return os.MkdirAll(projectDir, 0755)
+}
+
+// AppendProjectProfile appends a profile card to project's profile.jsonl
+func (s *Storage) AppendProjectProfile(directory string, card *types.ProfileCard) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.EnsureProjectDir(directory); err != nil {
+		return err
+	}
+
+	projectDir := s.GetProjectDir(directory)
+	filePath := filepath.Join(projectDir, ProfileFile)
+	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	data, err := json.Marshal(card)
+	if err != nil {
+		return err
+	}
+
+	_, err = file.Write(append(data, '\n'))
+	return err
+}
+
+// ReadProjectProfiles reads all profile cards for a project
+func (s *Storage) ReadProjectProfiles(directory string) ([]types.ProfileCard, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	projectDir := s.GetProjectDir(directory)
+	filePath := filepath.Join(projectDir, ProfileFile)
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []types.ProfileCard{}, nil
+		}
+		return nil, err
+	}
+
+	var cards []types.ProfileCard
+	lines := splitLines(string(data))
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		var card types.ProfileCard
+		if err := json.Unmarshal([]byte(line), &card); err != nil {
+			continue
+		}
+		cards = append(cards, card)
+	}
+	return cards, nil
+}
+
+// WriteProjectProfiles overwrites project's profile.jsonl with provided cards
+func (s *Storage) WriteProjectProfiles(directory string, cards []types.ProfileCard) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.EnsureProjectDir(directory); err != nil {
+		return err
+	}
+
+	projectDir := s.GetProjectDir(directory)
+	filePath := filepath.Join(projectDir, ProfileFile)
+	file, err := os.Create(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	for _, card := range cards {
+		data, err := json.Marshal(card)
+		if err != nil {
+			return err
+		}
+		if _, err := file.Write(append(data, '\n')); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// SaveProjectMeta saves project metadata
+func (s *Storage) SaveProjectMeta(directory string, meta *types.ProjectProfile) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.EnsureProjectDir(directory); err != nil {
+		return err
+	}
+
+	projectDir := s.GetProjectDir(directory)
+	filePath := filepath.Join(projectDir, ProjectMetaFile)
+	data, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(filePath, data, 0644)
+}
+
+// ReadProjectMeta reads project metadata
+func (s *Storage) ReadProjectMeta(directory string) (*types.ProjectProfile, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	projectDir := s.GetProjectDir(directory)
+	filePath := filepath.Join(projectDir, ProjectMetaFile)
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var meta types.ProjectProfile
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return nil, err
+	}
+	return &meta, nil
 }

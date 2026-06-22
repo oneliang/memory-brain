@@ -14,6 +14,12 @@ input=$(cat)
 session_id=$(echo "$input" | jq -r '.session_id // empty')
 user_id=$(echo "$input" | jq -r '.user_id // empty')
 prompt=$(echo "$input" | jq -r '.prompt // empty')
+directory=$(echo "$input" | jq -r '.directory // empty')
+
+# If directory not provided, use current working directory
+if [ -z "$directory" ]; then
+    directory=$(pwd)
+fi
 
 if [ -z "$session_id" ] || [ -z "$user_id" ] || [ -z "$prompt" ]; then
     exit 0  # Don't block agent
@@ -30,12 +36,14 @@ request_json=$(jq -n \
     --arg hook "user_prompt_submit" \
     --arg ts "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
     --arg prompt "$prompt" \
+    --arg dir "$directory" \
     '{
         id: $id,
         session_id: $sid,
         user_id: $uid,
         hook_type: $hook,
         timestamp: $ts,
+        directory: $dir,
         data: {
             prompt: $prompt
         }

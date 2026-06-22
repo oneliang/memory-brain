@@ -15,6 +15,12 @@ user_id=$(echo "$input" | jq -r '.user_id // empty')
 tool_name=$(echo "$input" | jq -r '.tool_name // empty')
 tool_input=$(echo "$input" | jq '.tool_input // {}')
 tool_result=$(echo "$input" | jq '.tool_result // {}')
+directory=$(echo "$input" | jq -r '.directory // empty')
+
+# If directory not provided, use current working directory
+if [ -z "$directory" ]; then
+    directory=$(pwd)
+fi
 
 if [ -z "$session_id" ] || [ -z "$user_id" ] || [ -z "$tool_name" ]; then
     exit 0  # Don't block agent
@@ -33,12 +39,14 @@ request_json=$(jq -n \
     --arg tool "$tool_name" \
     --argjson input "$tool_input" \
     --argjson result "$tool_result" \
+    --arg dir "$directory" \
     '{
         id: $id,
         session_id: $sid,
         user_id: $uid,
         hook_type: $hook,
         timestamp: $ts,
+        directory: $dir,
         data: {
             tool_name: $tool,
             tool_input: $input,

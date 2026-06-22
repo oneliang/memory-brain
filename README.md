@@ -81,6 +81,46 @@ The `hooks/*.sh` files are **reference examples** showing how to call the API. A
    curl http://localhost:12321/memory/health
    ```
 
+### Session & Directory Profiles
+
+Memory Brain automatically maintains three levels of profiles:
+
+1. **User-level** (by `user_id`) - Long-term user preferences and patterns
+2. **Session-level** (by `session_id`) - Per-conversation context and intent
+3. **Directory-level** (by `directory`) - Project/workspace context
+
+**To enable session & directory profiles**, include these fields in your observation requests:
+
+```json
+{
+  "session_id": "session_abc",
+  "user_id": "user_123",
+  "directory": "/path/to/project",
+  ...
+}
+```
+
+**Query profiles**:
+
+```bash
+# Session profile
+GET /memory/session/profile?user_id=user_123&session_id=session_abc&inject=true
+
+# Directory profile (auto-analyzes directory type)
+GET /memory/project/profile?directory=/path/to/project&inject=true
+```
+
+The `inject=true` parameter generates a `systemMessage` field that can be directly injected into your LLM's system prompt.
+
+**Directory categories**: Memory Brain automatically detects directory types:
+- `development` - Code projects
+- `documentation` - Document libraries
+- `operations` - Data/operations directories
+- `design` - Design resources
+- `media` - Media files
+- `mixed` - Multiple content types
+- `unknown` - No clear category
+
 ## API Reference
 
 ### POST /memory/observe
@@ -97,6 +137,7 @@ Capture tool usage for behavior pattern analysis.
   "id": "obs_001",
   "session_id": "session_abc",
   "user_id": "user_123",
+  "directory": "/path/to/project",
   "hook_type": "post_tool_use",
   "timestamp": "2026-05-26T10:00:00Z",
   "data": {
@@ -106,6 +147,8 @@ Capture tool usage for behavior pattern analysis.
   }
 }
 ```
+
+**Note**: The `directory` field is optional. When provided, it enables directory-level profile tracking.
 
 **Response**:
 ```json
@@ -132,6 +175,7 @@ Capture user's original message for intent analysis. **Recommended to capture ev
   "id": "obs_002",
   "session_id": "session_abc",
   "user_id": "user_123",
+  "directory": "/path/to/project",
   "hook_type": "user_prompt_submit",
   "timestamp": "2026-05-26T10:01:00Z",
   "data": {
@@ -139,6 +183,8 @@ Capture user's original message for intent analysis. **Recommended to capture ev
   }
 }
 ```
+
+**Note**: The `directory` field is optional. When provided, it enables directory-level profile tracking.
 
 **Response**:
 ```json
@@ -227,6 +273,102 @@ Generate and save session summary.
 }
 ```
 
+### GET /memory/session/profile
+
+Get session-level profile.
+
+**Query Parameters**:
+- `user_id` (required): User ID
+- `session_id` (required): Session ID
+- `inject` (optional): If "true", generates system message
+
+**Response**:
+```json
+{
+  "success": true,
+  "data": {
+    "user_id": "user_123",
+    "session_id": "session_abc",
+    "profile_count": 5,
+    "pattern_count": 3,
+    "systemMessage": "Session context: ..."
+  }
+}
+```
+
+### GET /memory/project/profile
+
+Get directory-level profile (automatically analyzes directory type and content).
+
+**Query Parameters**:
+- `directory` (required): Directory path
+- `inject` (optional): If "true", generates system message
+
+**Response**:
+```json
+{
+  "success": true,
+  "data": {
+    "directory": "/path/to/project",
+    "profile_count": 2,
+    "category": "development",
+    "summary": "开发项目，技术栈：Go。包含 15 个文件，3 个目录。",
+    "stats": {
+      "total_files": 15,
+      "total_dirs": 3,
+      "extension_count": {".go": 10, ".md": 5},
+      "category_scores": [
+        {"category": "development", "score": 0.85},
+        {"category": "documentation", "score": 0.15}
+      ]
+    },
+    "highlights": [".go 文件：10 个", ".md 文件：5 个"],
+    "last_accessed": "2026-06-22T10:00:00Z",
+    "systemMessage": "目录画像摘要:\n- 这是一个开发项目目录。..."
+  }
+}
+```
+
+**Supported directory categories**:
+- `development` - Code projects (Go, Node.js, Python, etc.)
+- `documentation` - Document libraries (PDF, Markdown, etc.)
+- `operations` - Data/operations directories (CSV, Excel, SQL, etc.)
+- `design` - Design resources (PSD, SVG, images, etc.)
+- `media` - Media files (video, audio, etc.)
+- `mixed` - Multiple types of content
+- `unknown` - No clear category
+
+### POST /memory/project/analyze
+
+Analyze directory and generate profile (optional - automatically triggered on first query).
+
+**Request**:
+```json
+{
+  "directory": "/path/to/project"
+}
+```
+
+**Response**:
+```json
+{
+  "success": true,
+  "data": {
+    "analyzed": true,
+    "directory": "/path/to/project",
+    "project_hash": "a1b2c3d4e5f6...",
+    "category": "development",
+    "summary": "开发项目，技术栈：Go。包含 15 个文件，3 个目录。",
+    "stats": {
+      "total_files": 15,
+      "total_dirs": 3,
+      "extension_count": {".go": 10, ".md": 5}
+    },
+    "highlights": [".go 文件：10 个", ".md 文件：5 个"]
+  }
+}
+```
+
 ## Features
 
 - **Four-layer memory**: Working → Episodic → Semantic → Procedural
@@ -255,6 +397,24 @@ Generate and save session summary.
 | `profile.jsonl` | JSONL (append) | IntentCard (intent frequency), PreferenceCard |
 | `patterns.jsonl` | JSONL (append) | tool_usage patterns, user_prompt patterns |
 | `sessions_archive/*.json` | JSON (single) | Session summaries |
+| `sessions/{sessionID}/profile.jsonl` | JSONL (append) | Session-level profile cards |
+| `sessions/{sessionID}/patterns.jsonl` | JSONL (append) | Session-level patterns |
+| `projects/{projectHash}/profile.jsonl` | JSONL (append) | Project-level profile cards |
+| `projects/{projectHash}/meta.json` | JSON (single) | Project metadata (tech stack, summary) |
+
+**Storage Structure**:
+```
+~/.memory-brain/
+├── users/{userID}/                    # User-level (default)
+│   ├── profile.jsonl                  # IntentCard, PreferenceCard
+│   ├── patterns.jsonl                 # tool_usage, user_prompt
+│   ├── sessions_archive/              # Session summaries
+│   ├── sessions/{sessionID}/          # Session-level profiles
+│   └── projects/{projectHash}/        # Project-level profiles (deprecated, moved to root)
+└── projects/{projectHash}/            # Project-level (new)
+    ├── profile.jsonl                  # Project profiles
+    └── meta.json                      # Project metadata
+```
 
 ## License
 

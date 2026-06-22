@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,6 +37,7 @@ type Handler struct {
 	searchEngines         map[string]*search.HybridSearchEngine // per-user search engines
 	searchMu              sync.RWMutex                          // protects searchEngines
 	analyzer              *profile.Analyzer
+	projectAnalyzer       *profile.ProjectAnalyzer
 	generator             *summary.Generator
 	sessionDedupManager   *dedup.SessionCacheManager            // session-level dedup (immediate)
 	userDedupCaches       map[string]*dedup.HashCache           // user-level dedup (for storage)
@@ -79,6 +81,7 @@ func NewServer(port int, cfg *config.Config) *Server {
 			storage:              store,
 			searchEngines:        make(map[string]*search.HybridSearchEngine),
 			analyzer:             profile.NewAnalyzer(),
+			projectAnalyzer:      profile.NewProjectAnalyzer(),
 			generator:            summary.NewGenerator(),
 			sessionDedupManager:  dedup.NewSessionCacheManager(dedup.DedupWindow),
 			userDedupCaches:      make(map[string]*dedup.HashCache),
@@ -147,6 +150,9 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/memory/search", s.handler.handleSearch)
 	mux.HandleFunc("/memory/profile/update", s.handler.handleProfileUpdate)
 	mux.HandleFunc("/memory/session/summary", s.handler.handleSessionSummary)
+	mux.HandleFunc("/memory/session/profile", s.handler.handleSessionProfile)
+	mux.HandleFunc("/memory/project/profile", s.handler.handleProjectProfile)
+	mux.HandleFunc("/memory/project/analyze", s.handler.handleProjectAnalyze)
 	mux.HandleFunc("/memory/health", s.handler.handleHealth)
 
 	// Register graph routes
@@ -308,6 +314,18 @@ func (h *Handler) processObservation(obs *types.Observation) {
 			}
 		}
 
+		// Write to session-level storage: append the new pattern
+		if obs.SessionID != "" {
+			// Find the tool pattern we just created/updated
+			userPatterns, _ := h.storage.ReadPatterns(obs.UserID)
+			for i := len(userPatterns) - 1; i >= 0; i-- {
+				if userPatterns[i].Type == "tool_usage" && userPatterns[i].Pattern == toolName {
+					h.storage.AppendSessionPattern(obs.UserID, obs.SessionID, &userPatterns[i])
+					break
+				}
+			}
+		}
+
 	case "user_prompt_submit":
 		// Extract user prompt for intent analysis
 		prompt, ok := obs.Data["prompt"].(string)
@@ -361,6 +379,54 @@ func (h *Handler) processObservation(obs *types.Observation) {
 			if err := h.storage.WriteProfiles(obs.UserID, profiles); err != nil {
 				log.Printf("Failed to write intent profile: %v", err)
 			}
+
+			// Write to session-level storage: replace the IntentCard (singleton)
+			if obs.SessionID != "" {
+				// Read existing session profiles
+				sessionProfiles, _ := h.storage.ReadSessionProfiles(obs.UserID, obs.SessionID)
+				if sessionProfiles == nil {
+					sessionProfiles = []types.ProfileCard{}
+				}
+
+				// Find and update or add the IntentCard
+				found := false
+				for i := range sessionProfiles {
+					if sessionProfiles[i].Type == "IntentCard" {
+						sessionProfiles[i] = *existingIntent
+						found = true
+						break
+					}
+				}
+				if !found {
+					sessionProfiles = append(sessionProfiles, *existingIntent)
+				}
+
+				h.storage.WriteSessionProfiles(obs.UserID, obs.SessionID, sessionProfiles)
+			}
+
+			// Write to project-level storage if Directory is provided
+			if obs.Directory != "" {
+				// Read existing project profiles
+				projectProfiles, _ := h.storage.ReadProjectProfiles(obs.Directory)
+				if projectProfiles == nil {
+					projectProfiles = []types.ProfileCard{}
+				}
+
+				// Find and update or add the IntentCard
+				found := false
+				for i := range projectProfiles {
+					if projectProfiles[i].Type == "IntentCard" {
+						projectProfiles[i] = *existingIntent
+						found = true
+						break
+					}
+				}
+				if !found {
+					projectProfiles = append(projectProfiles, *existingIntent)
+				}
+
+				h.storage.WriteProjectProfiles(obs.Directory, projectProfiles)
+			}
 		} else {
 			// Create new intent profile card
 			intentCard := &types.ProfileCard{
@@ -384,6 +450,16 @@ func (h *Handler) processObservation(obs *types.Observation) {
 			if err := h.storage.AppendProfile(obs.UserID, intentCard); err != nil {
 				log.Printf("Failed to append intent profile: %v", err)
 			}
+
+			// Write to session-level storage
+			if obs.SessionID != "" {
+				h.storage.AppendSessionProfile(obs.UserID, obs.SessionID, intentCard)
+			}
+
+			// Write to project-level storage if Directory is provided
+			if obs.Directory != "" {
+				h.storage.AppendProjectProfile(obs.Directory, intentCard)
+			}
 		}
 
 		// Also store prompt as interaction pattern for session summary
@@ -399,6 +475,11 @@ func (h *Handler) processObservation(obs *types.Observation) {
 		}
 		if err := h.storage.AppendPattern(obs.UserID, promptPattern); err != nil {
 			log.Printf("Failed to append prompt pattern: %v", err)
+		}
+
+		// Write prompt pattern to session-level storage
+		if obs.SessionID != "" {
+			h.storage.AppendSessionPattern(obs.UserID, obs.SessionID, promptPattern)
 		}
 
 	default:
@@ -964,6 +1045,247 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status":  "healthy",
 		"version": "0.1.0",
 	})
+}
+
+// handleSessionProfile handles GET /memory/session/profile
+func (h *Handler) handleSessionProfile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID := r.URL.Query().Get("user_id")
+	sessionID := r.URL.Query().Get("session_id")
+	if userID == "" || sessionID == "" {
+		writeError(w, "Missing user_id or session_id parameter", http.StatusBadRequest)
+		return
+	}
+
+	inject := r.URL.Query().Get("inject") == "true"
+
+	// 1. Load session profiles and patterns
+	profiles, err := h.storage.ReadSessionProfiles(userID, sessionID)
+	if err != nil {
+		log.Printf("Failed to read session profiles: %v", err)
+		profiles = []types.ProfileCard{}
+	}
+
+	patterns, err := h.storage.ReadSessionPatterns(userID, sessionID)
+	if err != nil {
+		log.Printf("Failed to read session patterns: %v", err)
+		patterns = []types.PatternCard{}
+	}
+
+	// 2. Build response
+	resp := map[string]interface{}{
+		"user_id":   userID,
+		"session_id": sessionID,
+		"profile_count": len(profiles),
+		"pattern_count": len(patterns),
+		"profiles":  profiles,
+		"patterns":  patterns,
+	}
+
+	// 3. Generate system message if inject=true
+	if inject && (len(profiles) > 0 || len(patterns) > 0) {
+		resp["systemMessage"] = h.buildSessionProfileMessage(profiles, patterns)
+	}
+
+	writeSuccess(w, resp)
+}
+
+// handleProjectProfile handles GET /memory/project/profile
+func (h *Handler) handleProjectProfile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	directory := r.URL.Query().Get("directory")
+	if directory == "" {
+		writeError(w, "Missing directory parameter", http.StatusBadRequest)
+		return
+	}
+
+	inject := r.URL.Query().Get("inject") == "true"
+
+	// 1. Load project profiles
+	profiles, err := h.storage.ReadProjectProfiles(directory)
+	if err != nil {
+		log.Printf("Failed to read project profiles: %v", err)
+		profiles = []types.ProfileCard{}
+	}
+
+	// 2. Load project metadata
+	meta, err := h.storage.ReadProjectMeta(directory)
+	if err != nil {
+		log.Printf("Failed to read project meta: %v", err)
+		meta = nil
+	}
+
+	// 3. Build response
+	resp := map[string]interface{}{
+		"directory":     directory,
+		"profile_count": len(profiles),
+		"profiles":      profiles,
+	}
+
+	if meta != nil {
+		resp["summary"] = meta.Summary
+		resp["category"] = meta.Category
+		resp["stats"] = meta.Stats
+		resp["highlights"] = meta.Highlights
+		resp["last_accessed"] = meta.LastAccessed
+	}
+
+	// 4. Generate system message if inject=true
+	if inject && len(profiles) > 0 {
+		resp["systemMessage"] = h.buildProjectProfileMessage(profiles, meta)
+	}
+
+	writeSuccess(w, resp)
+}
+
+// handleProjectAnalyze handles POST /memory/project/analyze
+func (h *Handler) handleProjectAnalyze(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Directory string `json:"directory"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Directory == "" {
+		writeError(w, "Missing directory parameter", http.StatusBadRequest)
+		return
+	}
+
+	// Analyze project
+	profile, err := h.projectAnalyzer.AnalyzeProject(req.Directory)
+	if err != nil {
+		writeError(w, fmt.Sprintf("Failed to analyze project: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Save project metadata
+	if err := h.storage.SaveProjectMeta(req.Directory, profile); err != nil {
+		log.Printf("Failed to save project meta: %v", err)
+	}
+
+	writeSuccess(w, map[string]interface{}{
+		"analyzed":     true,
+		"directory":    req.Directory,
+		"project_hash": profile.ProjectHash,
+		"category":     profile.Category,
+		"summary":      profile.Summary,
+		"stats":        profile.Stats,
+		"highlights":   profile.Highlights,
+	})
+}
+
+// buildSessionProfileMessage generates a system message from session profile
+func (h *Handler) buildSessionProfileMessage(profiles []types.ProfileCard, patterns []types.PatternCard) string {
+	var parts []string
+
+	// Extract intent info
+	for _, card := range profiles {
+		if card.Type == "IntentCard" {
+			if intentFreq, ok := card.Content["intent_freq"].(map[string]interface{}); ok {
+				// Sort keys for deterministic output
+				var keys []string
+				for intent := range intentFreq {
+					keys = append(keys, intent)
+				}
+				sort.Strings(keys)
+
+				var intents []string
+				for _, intent := range keys {
+					freq := intentFreq[intent]
+					intents = append(intents, fmt.Sprintf("%s(%v)", intent, freq))
+				}
+				if len(intents) > 0 {
+					parts = append(parts, "Session意图: "+strings.Join(intents, ", "))
+				}
+			}
+			if prompt, ok := card.Content["last_prompt"].(string); ok && prompt != "" {
+				parts = append(parts, "最近问题: "+prompt)
+			}
+		}
+	}
+
+	// Extract tool patterns
+	toolFreq := make(map[string]int)
+	for _, p := range patterns {
+		if p.Type == "tool_usage" {
+			toolFreq[p.Pattern] += p.Frequency
+		}
+	}
+	if len(toolFreq) > 0 {
+		var toolList []string
+		for tool, freq := range toolFreq {
+			toolList = append(toolList, fmt.Sprintf("%s(%d)", tool, freq))
+		}
+		parts = append(parts, "工具使用: "+strings.Join(toolList, ", "))
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+	return "Session画像摘要:\n- " + strings.Join(parts, "\n- ")
+}
+
+// buildProjectProfileMessage generates a system message from project profile
+func (h *Handler) buildProjectProfileMessage(profiles []types.ProfileCard, meta *types.ProjectProfile) string {
+	var parts []string
+
+	// Add directory summary from meta
+	if meta != nil {
+		// Category-specific message
+		switch meta.Category {
+		case "development":
+			parts = append(parts, "这是一个开发项目目录。")
+		case "documentation":
+			parts = append(parts, "这是一个文档库目录。")
+		case "operations":
+			parts = append(parts, "这是一个数据/运营目录。")
+		case "design":
+			parts = append(parts, "这是一个设计资源目录。")
+		case "media":
+			parts = append(parts, "这是一个媒体文件目录。")
+		case "mixed":
+			parts = append(parts, "这是一个混合用途目录。")
+		default:
+			parts = append(parts, "这是一个未分类目录。")
+		}
+
+		if meta.Summary != "" {
+			parts = append(parts, meta.Summary)
+		}
+
+		// Add highlights
+		if len(meta.Highlights) > 0 {
+			parts = append(parts, "主要特征: "+strings.Join(meta.Highlights, ", "))
+		}
+	}
+
+	// Add patterns from profiles
+	for _, card := range profiles {
+		if pattern, ok := card.Content["pattern"].(string); ok && pattern != "" {
+			parts = append(parts, pattern)
+		}
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+	return "目录画像摘要:\n- " + strings.Join(parts, "\n- ")
 }
 
 // Helper functions
